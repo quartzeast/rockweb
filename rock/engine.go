@@ -4,15 +4,27 @@ import "net/http"
 
 type HandlerFunc func(http.ResponseWriter, *http.Request)
 
-type router struct {
+type routerGroup struct {
+	prefix         string
 	handlerFuncMap map[string]HandlerFunc // path -> handler
 }
 
-func (r *router) AddRoute(name string, handler HandlerFunc) {
-	if r.handlerFuncMap == nil {
-		r.handlerFuncMap = make(map[string]HandlerFunc)
+func (rg *routerGroup) AddRoute(pattern string, handler HandlerFunc) {
+	fullPattern := rg.prefix + pattern
+	rg.handlerFuncMap[fullPattern] = handler
+}
+
+type router struct {
+	routerGroups []*routerGroup
+}
+
+func (r *router) Group(prefix string) *routerGroup {
+	group := &routerGroup{
+		prefix:         prefix,
+		handlerFuncMap: make(map[string]HandlerFunc),
 	}
-	r.handlerFuncMap[name] = handler
+	r.routerGroups = append(r.routerGroups, group)
+	return group
 }
 
 type Engine struct {
@@ -21,15 +33,15 @@ type Engine struct {
 
 func New() *Engine {
 	return &Engine{
-		router: router{
-			handlerFuncMap: make(map[string]HandlerFunc),
-		},
+		router: router{},
 	}
 }
 
 func (e *Engine) Run(addr string) error {
-	for pattern, handler := range e.handlerFuncMap {
-		http.HandleFunc(pattern, handler)
+	for _, group := range e.routerGroups {
+		for pattern, handler := range group.handlerFuncMap {
+			http.HandleFunc(pattern, handler)
+		}
 	}
 
 	return http.ListenAndServe(addr, nil)
