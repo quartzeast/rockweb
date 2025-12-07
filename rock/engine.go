@@ -2,35 +2,64 @@ package rock
 
 import (
 	"net/http"
-	"slices"
 )
 
-type HandlerFunc func(http.ResponseWriter, *http.Request)
+const ANY = "ANY"
+
+type HandlerFunc func(ctx *Context)
 
 type routerGroup struct {
 	prefix           string
-	handlerFuncMap   map[string]HandlerFunc // path -> handler
+	handlerFuncMap   map[string]map[string]HandlerFunc // {pattern: {method: handler} }
 	handlerMethodMap map[string][]string
 }
 
-func (rg *routerGroup) AddRoute(pattern string, handler HandlerFunc) {
+func (rg *routerGroup) AddRoute(pattern string, method string, handler HandlerFunc) {
 	fullPattern := rg.prefix + pattern
-	rg.handlerFuncMap[fullPattern] = handler
+	_, ok := rg.handlerFuncMap[fullPattern]
+	if !ok {
+		rg.handlerFuncMap[fullPattern] = make(map[string]HandlerFunc)
+	}
+
+	_, ok = rg.handlerFuncMap[fullPattern][method]
+	if ok {
+		panic("route already exists: " + method + " " + fullPattern)
+	}
+
+	rg.handlerFuncMap[fullPattern][method] = handler
+	rg.handlerMethodMap[method] = append(rg.handlerMethodMap[method], fullPattern)
 }
 
 func (rg *routerGroup) ANY(pattern string, handler HandlerFunc) {
-	rg.AddRoute(pattern, handler)
-	rg.handlerMethodMap["ANY"] = append(rg.handlerMethodMap["ANY"], rg.prefix+pattern)
+	rg.AddRoute(pattern, ANY, handler)
 }
 
 func (rg *routerGroup) GET(pattern string, handler HandlerFunc) {
-	rg.AddRoute(pattern, handler)
-	rg.handlerMethodMap[http.MethodGet] = append(rg.handlerMethodMap[http.MethodGet], rg.prefix+pattern)
+	rg.AddRoute(pattern, http.MethodGet, handler)
 }
 
 func (rg *routerGroup) POST(pattern string, handler HandlerFunc) {
-	rg.AddRoute(pattern, handler)
-	rg.handlerMethodMap[http.MethodPost] = append(rg.handlerMethodMap[http.MethodPost], rg.prefix+pattern)
+	rg.AddRoute(pattern, http.MethodPost, handler)
+}
+
+func (rg *routerGroup) DELETE(pattern string, handler HandlerFunc) {
+	rg.AddRoute(pattern, http.MethodDelete, handler)
+}
+
+func (rg *routerGroup) PUT(pattern string, handler HandlerFunc) {
+	rg.AddRoute(pattern, http.MethodPut, handler)
+}
+
+func (rg *routerGroup) PATCH(pattern string, handler HandlerFunc) {
+	rg.AddRoute(pattern, http.MethodPatch, handler)
+}
+
+func (rg *routerGroup) OPTIONS(pattern string, handler HandlerFunc) {
+	rg.AddRoute(pattern, http.MethodOptions, handler)
+}
+
+func (rg *routerGroup) HEAD(pattern string, handler HandlerFunc) {
+	rg.AddRoute(pattern, http.MethodHead, handler)
 }
 
 type router struct {
@@ -40,7 +69,7 @@ type router struct {
 func (r *router) Group(prefix string) *routerGroup {
 	group := &routerGroup{
 		prefix:           prefix,
-		handlerFuncMap:   make(map[string]HandlerFunc),
+		handlerFuncMap:   make(map[string]map[string]HandlerFunc),
 		handlerMethodMap: make(map[string][]string),
 	}
 	r.routerGroups = append(r.routerGroups, group)
@@ -48,29 +77,29 @@ func (r *router) Group(prefix string) *routerGroup {
 }
 
 type Engine struct {
-	router
+	*router
 }
 
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := r.Method
 	for _, group := range e.routerGroups {
-		for pattern, handler := range group.handlerFuncMap {
+		for pattern, methodMap := range group.handlerFuncMap {
 			if r.RequestURI == pattern {
-				allowedPatterns, ok := group.handlerMethodMap["ANY"]
-				if ok {
-					if slices.Contains(allowedPatterns, pattern) {
-						handler(w, r)
-						return
-					}
+				ctx := &Context{
+					Writer:  w,
+					Request: r,
 				}
 
-				// 根据 method 进行匹配
-				allowedPatterns, ok = group.handlerMethodMap[method]
+				handler, ok := methodMap[ANY]
 				if ok {
-					if slices.Contains(allowedPatterns, pattern) {
-						handler(w, r)
-						return
-					}
+					handler(ctx)
+					return
+				}
+
+				handler, ok = methodMap[method]
+				if ok {
+					handler(ctx)
+					return
 				}
 
 				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -84,7 +113,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func New() *Engine {
 	return &Engine{
-		router: router{},
+		router: &router{},
 	}
 }
 
