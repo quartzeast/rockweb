@@ -4,6 +4,7 @@ import "strings"
 
 // node represents a node in the prefix tree for route matching.
 type node struct {
+	pattern  string  // full pattern of the route (only set for end nodes)
 	part     string  // path segment of this node (e.g., "user", ":id", "*")
 	children []*node // child nodes
 	isWild   bool    // whether this node is a wildcard (starts with ':' or '*')
@@ -40,6 +41,7 @@ func (n *node) matchChildren(part string) []*node {
 //   - "/static/*filepath" - route with catch-all
 func (n *node) insert(pattern string, parts []string, height int) {
 	if len(parts) == height {
+		n.pattern = pattern
 		n.isEnd = true
 		return
 	}

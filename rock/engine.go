@@ -9,25 +9,29 @@ const ANY = "ANY"
 type HandlerFunc func(ctx *Context)
 
 type routerGroup struct {
-	prefix           string
-	handlerFuncMap   map[string]map[string]HandlerFunc // {pattern: {method: handler} }
-	handlerMethodMap map[string][]string
+	prefix   string
+	roots    map[string]*node       // {method: root node}
+	handlers map[string]HandlerFunc // {pattern: handler}
 }
 
 func (rg *routerGroup) AddRoute(pattern string, method string, handler HandlerFunc) {
 	fullPattern := rg.prefix + pattern
-	_, ok := rg.handlerFuncMap[fullPattern]
-	if !ok {
-		rg.handlerFuncMap[fullPattern] = make(map[string]HandlerFunc)
-	}
+	parts := parsePath(fullPattern)
 
-	_, ok = rg.handlerFuncMap[fullPattern][method]
+	key := method + "-" + fullPattern
+	_, ok := rg.handlers[key]
 	if ok {
 		panic("route already exists: " + method + " " + fullPattern)
 	}
 
-	rg.handlerFuncMap[fullPattern][method] = handler
-	rg.handlerMethodMap[method] = append(rg.handlerMethodMap[method], fullPattern)
+	// Initialize root node for this method if not exists
+	if _, ok := rg.roots[method]; !ok {
+		rg.roots[method] = &node{}
+	}
+
+	// Insert pattern into the tree
+	rg.roots[method].insert(fullPattern, parts, 0)
+	rg.handlers[key] = handler
 }
 
 func (rg *routerGroup) ANY(pattern string, handler HandlerFunc) {
@@ -68,9 +72,9 @@ type router struct {
 
 func (r *router) Group(prefix string) *routerGroup {
 	group := &routerGroup{
-		prefix:           prefix,
-		handlerFuncMap:   make(map[string]map[string]HandlerFunc),
-		handlerMethodMap: make(map[string][]string),
+		prefix:   prefix,
+		roots:    make(map[string]*node),
+		handlers: make(map[string]HandlerFunc),
 	}
 	r.routerGroups = append(r.routerGroups, group)
 	return group
@@ -82,33 +86,75 @@ type Engine struct {
 
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := r.Method
+	path := r.URL.Path
+	parts := parsePath(path)
+
+	ctx := &Context{
+		Writer:  w,
+		Request: r,
+		Params:  make(map[string]string),
+	}
+
 	for _, group := range e.routerGroups {
-		for pattern, methodMap := range group.handlerFuncMap {
-			if r.RequestURI == pattern {
-				ctx := &Context{
-					Writer:  w,
-					Request: r,
-				}
-
-				handler, ok := methodMap[ANY]
-				if ok {
+		// Try to match with ANY method first
+		if root, ok := group.roots[ANY]; ok {
+			if n := root.search(parts, 0); n != nil {
+				// Extract params
+				e.extractParams(ctx, n.pattern, parts)
+				key := ANY + "-" + n.pattern
+				if handler, ok := group.handlers[key]; ok {
 					handler(ctx)
 					return
 				}
+			}
+		}
 
-				handler, ok = methodMap[method]
-				if ok {
+		// Try to match with specific method
+		if root, ok := group.roots[method]; ok {
+			if n := root.search(parts, 0); n != nil {
+				// Extract params
+				e.extractParams(ctx, n.pattern, parts)
+				key := method + "-" + n.pattern
+				if handler, ok := group.handlers[key]; ok {
 					handler(ctx)
 					return
 				}
-
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-				return
 			}
 		}
 	}
 
 	http.NotFound(w, r)
+}
+
+// extractParams extracts path parameters from the matched route
+func (e *Engine) extractParams(ctx *Context, pattern string, parts []string) {
+	patternParts := parsePath(pattern)
+
+	for i, part := range patternParts {
+		if len(part) > 0 && part[0] == ':' {
+			// Named parameter
+			if i < len(parts) {
+				paramName := part[1:]
+				ctx.Params[paramName] = parts[i]
+			}
+		} else if len(part) > 0 && part[0] == '*' {
+			// Catch-all parameter
+			paramName := part[1:]
+			if i < len(parts) {
+				// Join remaining parts
+				remaining := parts[i:]
+				value := ""
+				for j, p := range remaining {
+					if j > 0 {
+						value += "/"
+					}
+					value += p
+				}
+				ctx.Params[paramName] = value
+			}
+			break
+		}
+	}
 }
 
 func New() *Engine {
